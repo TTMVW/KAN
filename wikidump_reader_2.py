@@ -1,6 +1,7 @@
 import bz2
 import xml.etree.ElementTree as ET
 from collections import namedtuple
+import random
 ArticleInfo = namedtuple('ArticleInfo', ['offset', 'page_id', 'title'])
 
 class WikipediaDumpReader:
