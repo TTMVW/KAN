@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pywt
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 from sklearn.neighbors import kneighbors_graph, NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
 from transformers import BertTokenizer, BertModel
@@ -12,8 +16,80 @@ import xml.etree.ElementTree as ET
 from collections import namedtuple
 import random
 from scipy.sparse import vstack
-
 from wikidump_reader_2 import WikipediaDumpReader
+import argparse
+
+# --- Collecting and Visualising --
+class ProgressVisualizer:
+    """A class to generate visualizations before and after training."""
+    def __init__(self, embeddings, graph):
+        """Initializes with the data needed for pre-training visuals."""
+        self.embeddings = embeddings
+        self.graph = graph
+        plt.style.use('seaborn-v0_8-whitegrid')
+
+    def plot_embedding_clusters(self, n_clusters=8, save_path="embedding_clusters.png"):
+        """Clusters embeddings, plots them in 2D, and calculates silhouette score."""
+        print(f"Running K-Means with {n_clusters} clusters...")
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto').fit(self.embeddings)
+        labels = kmeans.labels_
+        
+        score = silhouette_score(self.embeddings, labels)
+        print(f"Silhouette Score: {score:.4f}")
+
+        print("Reducing dimensions with PCA for plotting...")
+        pca = PCA(n_components=2)
+        embeddings_2d = pca.fit_transform(self.embeddings)
+
+        plt.figure(figsize=(12, 10))
+        scatter = plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=labels, cmap='viridis', alpha=0.7)
+        plt.title(f'Initial Embedding Clusters (Silhouette Score: {score:.4f})', fontsize=16)
+        plt.xlabel('Principal Component 1', fontsize=12)
+        plt.ylabel('Principal Component 2', fontsize=12)
+        plt.legend(handles=scatter.legend_elements()[0], labels=range(n_clusters), title="Clusters")
+        plt.savefig(save_path)
+        plt.close()
+
+    def plot_knn_graph_sample(self, n_samples=75, save_path="knn_graph_sample.png"):
+        """Visualizes a small, random sample of the k-NN graph."""
+        if self.graph.number_of_nodes() < n_samples:
+            n_samples = self.graph.number_of_nodes()
+
+        nodes = np.random.choice(self.graph.nodes(), n_samples, replace=False)
+        subgraph = self.graph.subgraph(nodes)
+        
+        sample_embeddings = self.embeddings[nodes]
+        pca = PCA(n_components=2)
+        pos = pca.fit_transform(sample_embeddings)
+        pos = {node: p for node, p in zip(nodes, pos)}
+
+        plt.figure(figsize=(14, 14))
+        nx.draw(subgraph, pos, with_labels=False, node_size=50, width=0.5, alpha=0.8, node_color='skyblue')
+        plt.title(f'Sample of the k-NN Knowledge Graph ({n_samples} nodes)', fontsize=16)
+        plt.savefig(save_path)
+        plt.close()
+        
+    def generate_pre_training_visuals(self):
+        """Runs all visualization tasks that can be done before training."""
+        print("\n Generating pre-training visualizations...")
+        self.plot_embedding_clusters()
+        self.plot_knn_graph_sample()
+        print("Pre-training visualizations saved as PNG files.")
+
+    @staticmethod
+    def plot_loss_curve(loss_history, save_path="loss_curve.png"):
+        """Plots the training loss over epochs. Can be called independently after training."""
+        print("\n Generating post-training visualization...")
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, len(loss_history) + 1), loss_history, marker='o', linestyle='-', color='b')
+        plt.title('Training Loss Curve', fontsize=16)
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.xticks(range(1, len(loss_history) + 1))
+        plt.grid(True)
+        plt.savefig(save_path)
+        plt.close()
+        print("Loss curve visualization saved as PNG file.")
 
 # --- Model and Training Classes ---
 
@@ -91,37 +167,70 @@ class MengerWavKAN(nn.Module):
 
 class WikipediaKG:
     def __init__(self, index_path, dump_path):
-        """The KG class no longer holds the BERT model, only the data loader and scaler."""
-        # self.wiki_reader = WikipediaDumpReader(index_path, dump_path) # Assumes this class is available
+        self.wiki_reader = WikipediaDumpReader(index_path, dump_path) # 
         self.scaler = MinMaxScaler()
 
-    def build_graph(self, n_articles=10000, k=5, batch_size=1024):
+    def build_graph(self, n_articles=10000, k=5, batch_size=1024,device='cpu',inference_batch_size=32):
         """
         Constructs the graph with a focus on minimizing peak memory usage.
         BERT is loaded and released locally.
         """
-        # articles = self.wiki_reader.get_random_sample(n_articles)
-        # texts = [a['text'][:512] for a in articles if a and 'text' in a and a['text']]
-        # Placeholder for text loading:
-        texts = ["This is a sample sentence." for _ in range(n_articles)]
+        articles = self.wiki_reader.get_random_sample(n_articles)
+        texts = [a['text'][:512] for a in articles if a and 'text' in a and a['text']]
+        print(f"\nGot {len(texts)} articles of 512, going for embeddings ...") 
 
-
-        # 1. Load BERT model locally for this function only
-        print("Loading BERT for embedding generation...")
+        # 1. Load BERT model to device for this function only
+        print(f"Loading BERT for embedding generation on device {device}")
         tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        model = BertModel.from_pretrained('bert-base-uncased')
+        if device == 'cuda':
+            model = BertModel.from_pretrained('bert-base-uncased').to(device)
+        else:
+            model = BertModel.from_pretrained('bert-base-uncased')
+        model.eval()
 
-        inputs = tokenizer(texts, return_tensors='pt', padding=True, truncation=True, max_length=512)
-        with torch.no_grad():
-            outputs = model(**inputs)
-        embeddings = outputs.last_hidden_state.mean(dim=1).numpy()
+        print(f"Batch Tokenizing with the Bert pretrained 'bert-base-uncased'")
+        all_embeddings = []
+        print(f"Generating embeddings in batches of {inference_batch_size}...")
+        # --- NEW: Process texts in batches ---
+        for i in range(0, len(texts), inference_batch_size):
+            batch_texts = texts[i:i + inference_batch_size]
+        
+            inputs = tokenizer(batch_texts, return_tensors='pt', padding=True, truncation=True, max_length=512)
+            if device == 'cuda' :
+                inputs = {key: val.to(device) for key, val in inputs.items()}
+
+            with torch.no_grad():
+                outputs = model(**inputs)
+        
+            # Calculate mean embedding for the batch and move to CPU
+            if device == 'cuda':
+                batch_embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+            else:
+                batch_embeddings = outputs.last_hidden_state.mean(dim=1).numpy()
+            progress =f"Adding a batch {i}"
+            print(progress,end="\r", flush=True)
+            all_embeddings.append(batch_embeddings)
+
+        # Concatenate embeddings from all batches
+        embeddings = np.vstack(all_embeddings)
+
+    
+        # Move embeddings back to cpu
+        if device == 'cuda' :
+            embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        else:
+            embeddings = outputs.last_hidden_state.mean(dim=1).numpy()
 
         # --- Immediately release BERT model memory ---
         del model
         del tokenizer
+        if device == 'cuda':
+            torch.cuda.empty_cache()
+
         print("BERT model released from memory.")
 
         # Scale embeddings
+        print("Scaling embeddings.")
         embeddings_scaled = self.scaler.fit_transform(embeddings)
         del embeddings # Delete original embeddings to save space
 
@@ -130,7 +239,9 @@ class WikipediaKG:
         nn_model = NearestNeighbors(n_neighbors=k, algorithm='auto', metric='cosine').fit(embeddings_scaled)
 
         adj_parts = []
+        batch_num = 1
         for start_idx in range(0, embeddings_scaled.shape[0], batch_size):
+            print(f"k-NN graph batch numnber {batch_num}\r")
             end_idx = min(start_idx + batch_size, embeddings_scaled.shape[0])
             adj_batch = nn_model.kneighbors_graph(embeddings_scaled[start_idx:end_idx], mode='connectivity')
             adj_parts.append(adj_batch)
@@ -143,12 +254,27 @@ class WikipediaKG:
         self.graph = nx.from_scipy_sparse_array(adj)
         return embeddings_scaled, adj
 
+
 class LoSwarm:
-    def __init__(self, model_creator, n_particles=20):
-        self.particles = [model_creator() for _ in range(n_particles)]
+    def __init__(self, model_creator, n_particles=20, social_weight=0.05, device='cpu'):
+        """
+        Initializes the swarm, moving each model to the specified device.
+
+        Args:
+            model_creator (function): A function that creates a new model instance.
+            n_particles (int): The number of models (particles) in the swarm.
+            social_weight (float): The influence of the best model on other particles.
+            device (str): The device to run the models on ('cuda' or 'cpu').
+        """
+        if device != 'cpu':
+            self.particles = [model_creator().to(device) for _ in range(n_particles)]
+        else:
+            self.particles = [model_creator() for _ in range(n_particles)]
         self.optimizers = [torch.optim.Adam(p.parameters(), lr=1e-3) for p in self.particles]
         self.best_loss = float('inf')
         self.best_model = None
+        self.social_weight = social_weight
+        self.device = device
 
     def train_epoch(self, data, adj):
         epoch_losses = []
@@ -164,6 +290,11 @@ class LoSwarm:
             loss.backward()
             opt.step()
 
+            if self.best_model is not None and model is not self.best_model:
+                with torch.no_grad():
+                    for param, best_param in zip(model.parameters(), self.best_model.parameters()):
+                        param.data += self.social_weight * (best_param.data - param.data)
+
             loss_item = loss.item()
             epoch_losses.append(loss_item)
 
@@ -174,34 +305,39 @@ class LoSwarm:
         return np.mean(epoch_losses)
 
 class KnowledgeGenerator:
-    def __init__(self, model, wiki_kg):
+    def __init__(self, model, wiki_kg, device='cpu'):
         self.model = model
-        self.wiki_kg = wiki_kg # Provides the scaler
+        self.wiki_kg = wiki_kg # Provides the scale
+        self.device = device
 
         # This generator is used for the final step, so it loads its own BERT model.
-        print("\nKnowledgeGenerator: Loading BERT model for text generation...")
+        print(f"\nKnowledgeGenerator: Loading BERT model for text generation onto device {self.device}")
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+        self.bert = BertModel.from_pretrained('bert-base-uncased').to(self.device)
 
     def generate(self, prompt=None, max_length=50, temp=0.7):
         self.model.eval()
         with torch.no_grad():
             if prompt:
                 inputs = self.tokenizer(prompt, return_tensors='pt', padding=True, truncation=True)
+                inputs = {key: val.to(self.device) for key, val in inputs.items()} # Move prompt to device
+
                 outputs = self.bert(**inputs)
-                emb = outputs.last_hidden_state.mean(dim=1).numpy()
+                emb = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
                 emb = self.wiki_kg.scaler.transform(emb)
-                encoded = self.model.encoder(torch.FloatTensor(emb))
+
+                encoded = self.model.encoder(torch.FloatTensor(emb).to(self.device))
                 mu, _ = self.model.mu(encoded), self.model.logvar(encoded)
                 z = mu
             else:
-                z = torch.randn(1, self.model.mu.out_features)
+                z = torch.randn(1, self.model.mu.out_features,device=self.device)
 
             gen_emb = self.model.decoder(z)
-            gen_emb = self.wiki_kg.scaler.inverse_transform(gen_emb.numpy())
+            gen_emb = gen_emb.cpu().numpy()
+            gen_emb = self.wiki_kg.scaler.inverse_transform(gen_emb)
 
             sim = torch.cosine_similarity(
-                torch.FloatTensor(gen_emb),
+                torch.FloatTensor(gen_emb).to(self.device),
                 self.bert.embeddings.word_embeddings.weight,
                 dim=-1
             )
@@ -217,14 +353,25 @@ class KnowledgeGenerator:
 
 # --- Usage Example ---
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train a MengerWavKAN model on Wikipedia data.")
+    parser.add_argument('--epochs', type=int, default=500,
+                        help="Number of epochs to train with the swarm.")
+    parser.add_argument('--articles', type=int, default=10000,
+                        help='Number of Wikipedia articles to process.')
+    parser.add_argument('--particles', type=int, default=20,
+                        help='Number of particles (models) in the swarm.')
+    parser.add_argument('--social_weight', type=float, default=0.05,
+                        help='Influence of the best model on other particles in the swarm.')
+    parser.add_argument('--device',default='cpu',
+                        help='For setting the preferred target')
+    args = parser.parse_args()
     # 1. Initialize Wikipedia reader and build graph
-    print("Initializing Wikipedia Knowledge Graph...")
-    # Dummy paths as the reader class is not defined in this snippet
+    print(f"Initializing Wikipedia Knowledge Graph with {args.articles} articles...")
     wiki = WikipediaKG(
-        index_path="dummy_index.txt.bz2",
-        dump_path="dummy_dump.xml.bz2"
-    )
-    embeddings_np, adj_matrix = wiki.build_graph(n_articles=10000, k=5)
+        index_path="data/wiki/enwiki-20241201-pages-articles-multistream-index.txt.bz2",
+        dump_path="data/wiki/enwiki-20241201-pages-articles-multistream.xml.bz2"
+        )
+    embeddings_np, adj_matrix = wiki.build_graph(n_articles=args.articles, k=5)
 
     # 2. Convert data to PyTorch tensors
     print("Converting data to tensors...")
@@ -236,22 +383,39 @@ if __name__ == "__main__":
     )
     data = torch.FloatTensor(embeddings_np)
 
-    # --- Clean up the large numpy array ---
+    # Process numpy array with the visualiser ---
+    visualiser = ProgressVisualizer(embeddings_np, wiki.graph)
+    visualiser.generate_pre_training_visuals()
+
+    # --- Clean up the large numpy array and visualiser---
     del embeddings_np
-    print("Numpy embeddings array released from memory.")
+    del visualiser
+    print("Numpy embeddings array and viualiser released from memory.")
 
     # 3. Initialize swarm of models
-    print("Initializing model swarm...")
+    print(f"\nInitializing model swarm with {args.particles} particles...")
+    if args.device == 'cuda':
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device="cpu"
+    print(f"Using device: {device}")
+    adj = adj.to(device)
+    data = data.to(device)
     def create_model():
         return MengerWavKAN(bert_dim=768, latent_dim=256, branches=20)
 
-    swarm = LoSwarm(create_model, n_particles=10)
-
+    swarm = LoSwarm(create_model,
+                    n_particles=args.particles,
+                    social_weight=args.social_weight,
+                    device=device)
+    
     # 4. Training loop
     print("Starting training...")
-    for epoch in range(500): #? Reduced epochs for demonstration
+    loss_history = []
+    for epoch in range(args.epochs): #? Reduced epochs for demonstration
         loss = swarm.train_epoch(data, adj)
         print(f"Epoch {epoch+1}, Loss: {loss:.4f}, Best Loss: {swarm.best_loss:.4f}")
+        loss_history.append(loss)
 
     # 5. Generate from the best model
     print("\n--- Generating Knowledge ---")
@@ -269,3 +433,10 @@ if __name__ == "__main__":
         print(generator.generate(max_length=100))
     else:
         print("Training did not result in a best model. Cannot generate text.")
+
+    ProgressVisualizer.plot_loss_curve(loss_history)
+
+    print("\n Finished") 
+
+
+

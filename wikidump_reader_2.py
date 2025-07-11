@@ -47,11 +47,14 @@ class WikipediaDumpReader:
         root = ET.fromstring(wrapped)
         
         articles = []
+        article_count = 1
         for page in root.findall('page'):
             title = page.find('title').text
             page_id = int(page.find('id').text)
             text = page.find('.//text').text or ""
-            
+            progress = f"Appending and article [{article_count}]"
+            print(progress, end="\r", flush=True)
+            article_count += 1
             articles.append({
                 'title': title,
                 'page_id': page_id,
