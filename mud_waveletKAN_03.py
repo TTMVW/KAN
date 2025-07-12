@@ -18,6 +18,7 @@ import random
 from scipy.sparse import vstack
 from wikidump_reader_2 import WikipediaDumpReader
 import argparse
+from datetime import datetime
 
 # --- Collecting and Visualising ---
 
@@ -56,7 +57,7 @@ class ProgressVisualizer:
         ax.set_ylabel('Principal Component 2', fontsize=12)
         ax.legend(handles=scatter.legend_elements()[0], labels=range(n_clusters), title="Clusters")
 
-        # --- Explanatory text box ---
+        # Explanatory text box ---
         explanation = (
             f"What this shows: A 2D view of the initial article embeddings, grouped by a K-Means clustering algorithm.\n"
             f"The Silhouette Score (ranges from -1 to 1) measures how well-separated the clusters are.\n"
@@ -68,7 +69,6 @@ class ProgressVisualizer:
         plt.close()
 
     def plot_knn_graph_sample(self, n_samples=75):
-        # ... (Graph sampling and layout logic is unchanged) ...
         title = f'Sample of k-NN Knowledge Graph\nRun: {self.timestamp} ({self.args_str})'
         save_path = f"{self.timestamp}_knn_graph_sample_{self.args_str}.png"
         
@@ -87,6 +87,11 @@ class ProgressVisualizer:
         plt.savefig(save_path)
         plt.close()
 
+    def generate_pretraining_visuals(self):
+        self.plot_embedding_clusters()
+        self.plot_knn_graph_sample()
+
+
     @staticmethod
     def plot_loss_curve(loss_history, timestamp, args_str):
         title = f'Training Loss Curve\nRun: {timestamp} ({args_str})'
@@ -99,7 +104,7 @@ class ProgressVisualizer:
         ax.set_ylabel('Loss', fontsize=12)
         ax.set_xticks(range(1, len(loss_history) + 1))
         
-        # --- NEW: Add explanatory text box ---
+        # Explanatory text box ---
         explanation = (
             "What this shows: The model's total error (loss) at the end of each training epoch.\n"
             "A downward trend indicates the model is learning successfully. The goal is to reach\n"
@@ -211,7 +216,7 @@ class WikipediaKG:
         print(f"Batch Tokenizing with the Bert pretrained 'bert-base-uncased'")
         all_embeddings = []
         print(f"Generating embeddings in batches of {inference_batch_size}...")
-        # --- NEW: Process texts in batches ---
+        # --- Process texts in batches ---
         for i in range(0, len(texts), inference_batch_size):
             batch_texts = texts[i:i + inference_batch_size]
         
@@ -261,7 +266,8 @@ class WikipediaKG:
         adj_parts = []
         batch_num = 1
         for start_idx in range(0, embeddings_scaled.shape[0], batch_size):
-            print(f"k-NN graph batch numnber {batch_num}\r")
+            progress = f"k-NN graph batch number {batch_num}"
+            print(progress,end="\r",flush=True))
             end_idx = min(start_idx + batch_size, embeddings_scaled.shape[0])
             adj_batch = nn_model.kneighbors_graph(embeddings_scaled[start_idx:end_idx], mode='connectivity')
             adj_parts.append(adj_batch)
@@ -406,7 +412,8 @@ if __name__ == "__main__":
     data = torch.FloatTensor(embeddings_np)
 
     # Process numpy array with the visualiser ---
-    visualiser = ProgressVisualizer(embeddings_np, wiki.graph)
+
+    visualiser = ProgressVisualizer(embeddings_np, wiki.graph,datetime.now(),args)
     visualiser.generate_pre_training_visuals()
 
     # --- Clean up the large numpy array and visualiser---
@@ -456,7 +463,7 @@ if __name__ == "__main__":
     else:
         print("Training did not result in a best model. Cannot generate text.")
 
-    ProgressVisualizer.plot_loss_curve(loss_history)
+    ProgressVisualizer.plot_loss_curve(loss_history,datatime.now(),args))
 
     print("\n Finished") 
 
