@@ -267,7 +267,7 @@ class WikipediaKG:
         batch_num = 1
         for start_idx in range(0, embeddings_scaled.shape[0], batch_size):
             progress = f"k-NN graph batch number {batch_num}"
-            print(progress,end="\r",flush=True))
+            print(progress,end="\r",flush=True)
             end_idx = min(start_idx + batch_size, embeddings_scaled.shape[0])
             adj_batch = nn_model.kneighbors_graph(embeddings_scaled[start_idx:end_idx], mode='connectivity')
             adj_parts.append(adj_batch)
@@ -463,7 +463,7 @@ if __name__ == "__main__":
     else:
         print("Training did not result in a best model. Cannot generate text.")
 
-    ProgressVisualizer.plot_loss_curve(loss_history,datatime.now(),args))
+    ProgressVisualizer.plot_loss_curve(loss_history,datatime.now(),args)
 
     print("\n Finished") 
 
