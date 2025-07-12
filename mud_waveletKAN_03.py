@@ -19,77 +19,97 @@ from scipy.sparse import vstack
 from wikidump_reader_2 import WikipediaDumpReader
 import argparse
 
-# --- Collecting and Visualising --
+# --- Collecting and Visualising ---
+
 class ProgressVisualizer:
-    """A class to generate visualizations before and after training."""
-    def __init__(self, embeddings, graph):
-        """Initializes with the data needed for pre-training visuals."""
+    """A class to generate self-explanatory visualizations of the model's progress."""
+    def __init__(self, embeddings, graph, timestamp, args_str):
         self.embeddings = embeddings
         self.graph = graph
+        self.timestamp = timestamp
+        self.args_str = args_str
         plt.style.use('seaborn-v0_8-whitegrid')
 
-    def plot_embedding_clusters(self, n_clusters=8, save_path="embedding_clusters.png"):
-        """Clusters embeddings, plots them in 2D, and calculates silhouette score."""
-        print(f"Running K-Means with {n_clusters} clusters...")
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto').fit(self.embeddings)
-        labels = kmeans.labels_
+    def _get_silhouette_interpretation(self, score):
+        """Provides a qualitative interpretation of a silhouette score."""
+        if score > 0.7:
+            return "Indicates a strong, well-defined cluster structure."
+        elif score > 0.5:
+            return "Indicates a reasonable cluster structure has been found."
+        elif score > 0.25:
+            return "Indicates a weak or artificial structure. Clusters may overlap."
+        else:
+            return "Indicates that no substantial cluster structure was found."
+
+    def plot_embedding_clusters(self, n_clusters=8):
+        # ... (KMeans and PCA logic is unchanged) ...
+        score = silhouette_score(self.embeddings, kmeans.labels_)
+        interpretation = self._get_silhouette_interpretation(score)
         
-        score = silhouette_score(self.embeddings, labels)
-        print(f"Silhouette Score: {score:.4f}")
+        title = f'Initial Embedding Clusters\nRun: {self.timestamp} ({self.args_str}) | Score: {score:.4f}'
+        save_path = f"{self.timestamp}_embedding_clusters_{self.args_str}.png"
+        
+        fig, ax = plt.subplots(figsize=(12, 10))
+        scatter = ax.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=labels, cmap='viridis', alpha=0.7)
+        ax.set_title(title, fontsize=14)
+        ax.set_xlabel('Principal Component 1', fontsize=12)
+        ax.set_ylabel('Principal Component 2', fontsize=12)
+        ax.legend(handles=scatter.legend_elements()[0], labels=range(n_clusters), title="Clusters")
 
-        print("Reducing dimensions with PCA for plotting...")
-        pca = PCA(n_components=2)
-        embeddings_2d = pca.fit_transform(self.embeddings)
-
-        plt.figure(figsize=(12, 10))
-        scatter = plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=labels, cmap='viridis', alpha=0.7)
-        plt.title(f'Initial Embedding Clusters (Silhouette Score: {score:.4f})', fontsize=16)
-        plt.xlabel('Principal Component 1', fontsize=12)
-        plt.ylabel('Principal Component 2', fontsize=12)
-        plt.legend(handles=scatter.legend_elements()[0], labels=range(n_clusters), title="Clusters")
+        # --- Explanatory text box ---
+        explanation = (
+            f"What this shows: A 2D view of the initial article embeddings, grouped by a K-Means clustering algorithm.\n"
+            f"The Silhouette Score (ranges from -1 to 1) measures how well-separated the clusters are.\n"
+            f"This score of {score:.4f} {interpretation}"
+        )
+        fig.text(0.5, 0.01, explanation, ha='center', va='bottom', wrap=True, fontsize=10, bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5))
+        fig.tight_layout(rect=[0, 0.1, 1, 1]) # Adjust layout to make space for text
         plt.savefig(save_path)
         plt.close()
 
-    def plot_knn_graph_sample(self, n_samples=75, save_path="knn_graph_sample.png"):
-        """Visualizes a small, random sample of the k-NN graph."""
-        if self.graph.number_of_nodes() < n_samples:
-            n_samples = self.graph.number_of_nodes()
-
-        nodes = np.random.choice(self.graph.nodes(), n_samples, replace=False)
-        subgraph = self.graph.subgraph(nodes)
+    def plot_knn_graph_sample(self, n_samples=75):
+        # ... (Graph sampling and layout logic is unchanged) ...
+        title = f'Sample of k-NN Knowledge Graph\nRun: {self.timestamp} ({self.args_str})'
+        save_path = f"{self.timestamp}_knn_graph_sample_{self.args_str}.png"
         
-        sample_embeddings = self.embeddings[nodes]
-        pca = PCA(n_components=2)
-        pos = pca.fit_transform(sample_embeddings)
-        pos = {node: p for node, p in zip(nodes, pos)}
+        fig, ax = plt.subplots(figsize=(14, 14))
+        nx.draw(subgraph, pos, ax=ax, with_labels=False, node_size=50, width=0.5, alpha=0.8, node_color='skyblue')
+        ax.set_title(title, fontsize=16)
 
-        plt.figure(figsize=(14, 14))
-        nx.draw(subgraph, pos, with_labels=False, node_size=50, width=0.5, alpha=0.8, node_color='skyblue')
-        plt.title(f'Sample of the k-NN Knowledge Graph ({n_samples} nodes)', fontsize=16)
+        # Explanatory text box ---
+        explanation = (
+            "What this shows: A random sample of nodes (articles) from the full knowledge graph.\n"
+            "An edge (line) between two nodes indicates that they are 'nearest neighbors',\n"
+            "meaning they have a high degree of semantic similarity based on their embeddings."
+        )
+        fig.text(0.5, 0.02, explanation, ha='center', va='bottom', wrap=True, fontsize=10, bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5))
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
         plt.savefig(save_path)
         plt.close()
-        
-    def generate_pre_training_visuals(self):
-        """Runs all visualization tasks that can be done before training."""
-        print("\n Generating pre-training visualizations...")
-        self.plot_embedding_clusters()
-        self.plot_knn_graph_sample()
-        print("Pre-training visualizations saved as PNG files.")
 
     @staticmethod
-    def plot_loss_curve(loss_history, save_path="loss_curve.png"):
-        """Plots the training loss over epochs. Can be called independently after training."""
-        print("\n Generating post-training visualization...")
-        plt.figure(figsize=(10, 6))
-        plt.plot(range(1, len(loss_history) + 1), loss_history, marker='o', linestyle='-', color='b')
-        plt.title('Training Loss Curve', fontsize=16)
-        plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel('Loss', fontsize=12)
-        plt.xticks(range(1, len(loss_history) + 1))
-        plt.grid(True)
+    def plot_loss_curve(loss_history, timestamp, args_str):
+        title = f'Training Loss Curve\nRun: {timestamp} ({args_str})'
+        save_path = f"{timestamp}_loss_curve_{args_str}.png"
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(range(1, len(loss_history) + 1), loss_history, marker='o', linestyle='-', color='b')
+        ax.set_title(title, fontsize=14)
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.set_xticks(range(1, len(loss_history) + 1))
+        
+        # --- NEW: Add explanatory text box ---
+        explanation = (
+            "What this shows: The model's total error (loss) at the end of each training epoch.\n"
+            "A downward trend indicates the model is learning successfully. The goal is to reach\n"
+            "the lowest possible value, where the curve flattens (a plateau)."
+        )
+        fig.text(0.5, 0.01, explanation, ha='center', va='bottom', fontsize=10, bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5))
+        fig.tight_layout(rect=[0, 0.1, 1, 1])
         plt.savefig(save_path)
         plt.close()
-        print("Loss curve visualization saved as PNG file.")
+
 
 # --- Model and Training Classes ---
 
@@ -170,14 +190,14 @@ class WikipediaKG:
         self.wiki_reader = WikipediaDumpReader(index_path, dump_path) # 
         self.scaler = MinMaxScaler()
 
-    def build_graph(self, n_articles=10000, k=5, batch_size=1024,device='cpu',inference_batch_size=32):
+    def build_graph(self, n_articles=10000,n_size=512, k=5, batch_size=1024,device='cpu',inference_batch_size=32):
         """
         Constructs the graph with a focus on minimizing peak memory usage.
         BERT is loaded and released locally.
         """
         articles = self.wiki_reader.get_random_sample(n_articles)
-        texts = [a['text'][:512] for a in articles if a and 'text' in a and a['text']]
-        print(f"\nGot {len(texts)} articles of 512, going for embeddings ...") 
+        texts = [a['text'][:n_size] for a in articles if a and 'text' in a and a['text']]
+        print(f"\nGot {len(texts)} articles of {n_size}, going for embeddings ...") 
 
         # 1. Load BERT model to device for this function only
         print(f"Loading BERT for embedding generation on device {device}")
@@ -358,6 +378,8 @@ if __name__ == "__main__":
                         help="Number of epochs to train with the swarm.")
     parser.add_argument('--articles', type=int, default=10000,
                         help='Number of Wikipedia articles to process.')
+    parser.add_argument('--article_size', type=int, default=512,
+                        help='Sample size in bytes of the article to process.')
     parser.add_argument('--particles', type=int, default=20,
                         help='Number of particles (models) in the swarm.')
     parser.add_argument('--social_weight', type=float, default=0.05,
@@ -371,7 +393,7 @@ if __name__ == "__main__":
         index_path="data/wiki/enwiki-20241201-pages-articles-multistream-index.txt.bz2",
         dump_path="data/wiki/enwiki-20241201-pages-articles-multistream.xml.bz2"
         )
-    embeddings_np, adj_matrix = wiki.build_graph(n_articles=args.articles, k=5)
+    embeddings_np, adj_matrix = wiki.build_graph(n_articles=args.articles,n_size=args.article_size, k=5)
 
     # 2. Convert data to PyTorch tensors
     print("Converting data to tensors...")
